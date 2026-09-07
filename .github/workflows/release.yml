@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Get version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build all platforms
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+
+          # os arch archive-format
+          PLATFORMS=(
+            "windows amd64 zip"
+            "linux amd64 tar.gz"
+            "linux arm64 tar.gz"
+            "darwin amd64 tar.gz"
+            "darwin arm64 tar.gz"
+          )
+
+          for entry in "${PLATFORMS[@]}"; do
+            read -r GOOS GOARCH FORMAT <<< "$entry"
+            NAME="quickserve_${VERSION}_${GOOS}_${GOARCH}"
+            BIN="quickserve"
+            [ "$GOOS" = "windows" ] && BIN="quickserve.exe"
+
+            echo "--- $NAME ---"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+              go build -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "build/$BIN" .
+
+            mkdir -p "build/pkg"
+            mv "build/$BIN" "build/pkg/$BIN"
+            cp README.md README.zh-CN.md LICENSE "build/pkg/"
+
+            if [ "$FORMAT" = "zip" ]; then
+              (cd build && zip -r "../dist/${NAME}.zip" pkg)
+            else
+              (cd build && tar -czf "../dist/${NAME}.tar.gz" pkg)
+            fi
+            rm -rf build
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.zip *.tar.gz > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            |---|---|
+            | Windows x64 | `quickserve_${{ steps.ver.outputs.version }}_windows_amd64.zip` |
+            | Linux x64 | `quickserve_${{ steps.ver.outputs.version }}_linux_amd64.tar.gz` |
+            | Linux ARM64 | `quickserve_${{ steps.ver.outputs.version }}_linux_arm64.tar.gz` |
+            | macOS Apple Silicon | `quickserve_${{ steps.ver.outputs.version }}_darwin_arm64.tar.gz` |
+            | macOS Intel | `quickserve_${{ steps.ver.outputs.version }}_darwin_amd64.tar.gz` |
+
+            Run `quickserve -v` to verify the version. SHA-256 checksums in `checksums.txt`.
+
+            Docs: [English](https://github.com/${{ github.repository }}/blob/main/README.md) | [简体中文](https://github.com/${{ github.repository }}/blob/main/README.zh-CN.md)

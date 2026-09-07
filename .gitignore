@@ -1,0 +1,17 @@
+# Binaries
+*.exe
+*.exe~
+quickserve
+quickserve-*
+dist/
+
+# Test and coverage artifacts
+*.out
+coverage.*
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

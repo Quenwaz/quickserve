@@ -1,0 +1,12 @@
+# Normalize all text files to LF in the repo and working tree,
+# so builds and CI behave identically on every platform.
+* text=auto eol=lf
+
+# Windows-specific
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaries
+*.exe binary
+*.zip binary
+*.tar.gz binary
