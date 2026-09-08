@@ -6,7 +6,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A zero-dependency static file server in a single binary — like `python -m http.server`, but faster to deploy, with safe file upload for **any file type**, CORS support and LAN-friendly output. Written in pure Go standard library, no third-party packages. Ships as a ~10 MB binary or a ~8 MB distroless container image.
+A zero-dependency static file server in a single binary — like `python -m http.server`, but faster to deploy, with safe file upload for **any file type**, CORS support and LAN-friendly output. Written in pure Go standard library, no third-party packages. Ships as a ~7 MB binary or a ~6.5 MB `scratch` container image.
 
 ## Why quickserve?
 
@@ -101,7 +101,7 @@ Upload is opt-in and guarded by several independent layers:
 
 ## Docker
 
-The image is built in two stages: Go compiles a statically-linked binary, then it is copied into **distroless static** — no shell, no package manager, no libc — running as **UID 65532 (non-root)**. Typical size ≈ 8 MB.
+The image is built in two stages: Go compiles a statically-linked binary (`CGO_ENABLED=0`), then it is copied into a bare **`scratch`** base image — no shell, no package manager, no libc, not even CA certificates — running as **UID 65532 (non-root)**. Typical size ≈ 6.5 MB, with a smaller attack surface than distroless.
 
 ```sh
 docker build -t quickserve .

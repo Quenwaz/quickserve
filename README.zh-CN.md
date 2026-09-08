@@ -6,7 +6,7 @@
 
 [English](README.md) | **简体中文**
 
-一个零依赖的单文件静态 HTTP 服务器。功能和 `python -m http.server` 类似，但**不需要装 Python、能安全地接收任意类型文件上传、支持跨域**。纯 Go 标准库实现，整个项目没有一行第三方依赖。交付形态：约 10 MB 的单文件可执行程序，或约 8 MB 的 distroless 容器镜像。
+一个零依赖的单文件静态 HTTP 服务器。功能和 `python -m http.server` 类似，但**不需要装 Python、能安全地接收任意类型文件上传、支持跨域**。纯 Go 标准库实现，整个项目没有一行第三方依赖。交付形态：约 7 MB 的单文件可执行程序，或约 6.5 MB 的 scratch 容器镜像。
 
 ## 它能帮你做什么
 
@@ -123,7 +123,7 @@ quickserve [选项]
 
 ## Docker
 
-镜像采用两阶段构建：Go 编译出静态链接的二进制，然后拷入 **distroless static** 基础镜像——无 shell、无包管理器、无 libc，以 **UID 65532（非 root）** 运行，典型大小约 8 MB。
+镜像采用两阶段构建：Go 以 `CGO_ENABLED=0` 编译出静态链接的二进制，然后拷入空的 **`scratch`** 基础镜像——无 shell、无包管理器、无 libc、连 CA 证书都没有，以 **UID 65532（非 root）** 运行，典型大小约 6.5 MB，攻击面比 distroless 更小。
 
 ```sh
 docker build -t quickserve .
