@@ -1,0 +1,26 @@
+services:
+  quickserve:
+    build: .
+    image: quickserve:latest
+    container_name: quickserve
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    # ---- 安全加固 ----
+    read_only: true            # 根文件系统只读，写入只进 /data
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL                    # 丢弃全部 Linux capabilities
+    security_opt:
+      - no-new-privileges:true # 禁止提权
+    # 资源约束（按需调整）
+    mem_limit: 256m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

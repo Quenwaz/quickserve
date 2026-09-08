@@ -1,19 +1,23 @@
-package main
+package server
 
 import (
 	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Quenwaz/quickserve/internal/config"
+	"github.com/Quenwaz/quickserve/internal/upload"
 )
 
-// newTestServer 创建一个服务 dir 目录的测试服务器与客户端。
+// newTestServer 创建一个服务 dir 目录的测试服务器。
 // 访问日志输出被丢弃，避免污染测试输出。
-func newTestServer(t *testing.T, dir string, opts options) (*httptest.Server, string) {
+func newTestServer(t *testing.T, dir string, opts *config.Options) *httptest.Server {
 	t.Helper()
 	logOutput = io.Discard
 	t.Cleanup(func() { logOutput = os.Stdout })
@@ -21,16 +25,33 @@ func newTestServer(t *testing.T, dir string, opts options) (*httptest.Server, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(newHandler(opts, abs))
+	up, err := upload.New(upload.Config{
+		Root:       abs,
+		MaxBytes:   opts.MaxUploadBytes(),
+		Token:      opts.Token(),
+		RatePerMin: opts.RatePerMinute(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(opts, http.FileServer(http.Dir(abs)), up))
 	t.Cleanup(ts.Close)
-	return ts, abs
+	return ts
+}
+
+func testOpts(mutate ...func(*config.Options)) *config.Options {
+	o := config.NewOptions()
+	for _, m := range mutate {
+		m(&o)
+	}
+	return &o
 }
 
 func TestDirectoryListing(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi"), 0o644)
 
-	ts, _ := newTestServer(t, dir, options{})
+	ts := newTestServer(t, dir, testOpts())
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +71,7 @@ func TestServeFile(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello world"), 0o644)
 
-	ts, _ := newTestServer(t, dir, options{})
+	ts := newTestServer(t, dir, testOpts())
 	resp, err := http.Get(ts.URL + "/hello.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +88,7 @@ func TestServeFile(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
-	ts, _ := newTestServer(t, t.TempDir(), options{})
+	ts := newTestServer(t, t.TempDir(), testOpts())
 	resp, err := http.Get(ts.URL + "/no-such-file")
 	if err != nil {
 		t.Fatal(err)
@@ -81,11 +102,9 @@ func TestNotFound(t *testing.T) {
 
 func TestUploadDisabledByDefault(t *testing.T) {
 	dir := t.TempDir()
-	// 先放置一个已存在的文件：FileServer 对存在文件的 POST 返回 405，
-	// 对不存在路径的 POST 返回 404，两种都说明上传未生效。
 	os.WriteFile(filepath.Join(dir, "up.txt"), []byte("old"), 0o644)
 
-	ts, _ := newTestServer(t, dir, options{})
+	ts := newTestServer(t, dir, testOpts())
 	resp, err := http.Post(ts.URL+"/up.txt", "text/plain", strings.NewReader("data"))
 	if err != nil {
 		t.Fatal(err)
@@ -104,9 +123,10 @@ func TestUploadDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestUploadEnabled(t *testing.T) {
+func TestUploadEnabledEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	ts, _ := newTestServer(t, dir, options{upload: true})
+	ts := newTestServer(t, dir, testOpts(func(o *config.Options) { o.SetUpload() }))
+
 	resp, err := http.Post(ts.URL+"/sub/up.txt", "text/plain", strings.NewReader("uploaded data"))
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +134,7 @@ func TestUploadEnabled(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
+		t.Fatalf("status = %d, want 201; body=%s", resp.StatusCode, mustRead(resp))
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "sub", "up.txt"))
 	if err != nil {
@@ -136,30 +156,88 @@ func TestUploadEnabled(t *testing.T) {
 	}
 }
 
-func TestUploadPathTraversal(t *testing.T) {
+func TestBrowserMultipartEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	parent := filepath.Dir(dir)
-	secret := filepath.Join(parent, "secret.txt")
-	t.Cleanup(func() { os.Remove(secret) })
+	ts := newTestServer(t, dir, testOpts(func(o *config.Options) { o.SetUpload() }))
 
-	h := handleUpload(dir)
-	// 直接以解码后的原始路径调用 handler，绕过 HTTP 客户端的路径规范化，
-	// 构造服务端可能收到的恶意路径。
-	for _, raw := range []string{"/../secret.txt", "/../../secret.txt", "/a/../../secret.txt"} {
-		req := httptest.NewRequest(http.MethodPost, raw, strings.NewReader("evil"))
-		w := httptest.NewRecorder()
-		h(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("POST %q status = %d, want 403", raw, w.Code)
-		}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "photo hello.jpg")
+	fw.Write([]byte("jpeg-bytes-here"))
+	mw.Close()
+
+	resp, err := http.Post(ts.URL+"/", mw.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(secret); err == nil {
-		t.Fatal("path traversal escaped root directory")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", resp.StatusCode, mustRead(resp))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "photo hello.jpg")); err != nil {
+		t.Errorf("multipart upload not saved: %v", err)
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	ts := newTestServer(t, t.TempDir(), testOpts())
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if strings.TrimSpace(string(body)) != "ok" {
+		t.Errorf("body = %q, want ok", body)
+	}
+}
+
+func TestUploadPageServedAtUnderscoreUpload(t *testing.T) {
+	ts := newTestServer(t, t.TempDir(), testOpts())
+	resp, err := http.Get(ts.URL + "/_upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "<!DOCTYPE html>") {
+		t.Error("upload page not served")
+	}
+}
+
+func TestReadOnlyMode(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o644)
+	ts := newTestServer(t, dir, testOpts(func(o *config.Options) { o.SetReadOnly() }))
+
+	resp, err := http.Get(ts.URL + "/f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("GET in read-only mode status = %d, want 403", resp.StatusCode)
+	}
+	// 健康检查仍可用
+	resp2, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("health in read-only mode status = %d, want 200", resp2.StatusCode)
 	}
 }
 
 func TestCORSHeaders(t *testing.T) {
-	ts, _ := newTestServer(t, t.TempDir(), options{cors: true})
+	ts := newTestServer(t, t.TempDir(), testOpts(func(o *config.Options) { o.SetCORS() }))
 
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
@@ -186,7 +264,7 @@ func TestCORSHeaders(t *testing.T) {
 }
 
 func TestNoCORSHeadersByDefault(t *testing.T) {
-	ts, _ := newTestServer(t, t.TempDir(), options{})
+	ts := newTestServer(t, t.TempDir(), testOpts())
 	resp, err := http.Get(ts.URL + "/")
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +278,8 @@ func TestNoCORSHeadersByDefault(t *testing.T) {
 
 func TestPrintBanner(t *testing.T) {
 	var buf bytes.Buffer
-	printBanner(&buf, options{port: 8000}, "/tmp")
+	o := config.NewOptions()
+	printBanner(&buf, &o, "/tmp")
 	out := buf.String()
 	for _, want := range []string{"Serving HTTP on port 8000", "Directory: /tmp", "Ctrl+C"} {
 		if !strings.Contains(out, want) {
@@ -209,22 +288,21 @@ func TestPrintBanner(t *testing.T) {
 	}
 }
 
-func TestUploadMethodNotAllowed(t *testing.T) {
-	h := handleUpload(t.TempDir())
-	req := httptest.NewRequest(http.MethodGet, "/x.txt", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET upload handler status = %d, want 405", w.Code)
+func TestBannerShowsUploadConfig(t *testing.T) {
+	var buf bytes.Buffer
+	o := config.NewOptions()
+	o.SetUpload()
+	o.SetToken("x")
+	printBanner(&buf, &o, "/tmp")
+	out := buf.String()
+	for _, want := range []string{"Max size:", "Rate:", "Auth:", "token required", "/_upload"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("banner missing %q:\n%s", want, out)
+		}
 	}
 }
 
-func TestUploadEmptyPath(t *testing.T) {
-	h := handleUpload(t.TempDir())
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(nil))
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("POST / status = %d, want 400", w.Code)
-	}
+func mustRead(resp *http.Response) string {
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
 }

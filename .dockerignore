@@ -1,0 +1,9 @@
+# 构建上下文最小化：只放行构建所需文件
+*
+!cmd/
+!internal/
+!go.mod
+!go.sum
+!README.md
+!README.zh-CN.md
+!LICENSE

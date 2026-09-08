@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quickserve upload</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1.25rem;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: light-dark(#f6f6f4, #16181d); color: light-dark(#222, #e8e8e8);
+    padding: 24px;
+  }
+  h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
+  #drop {
+    width: min(560px, 92vw); padding: 48px 24px; text-align: center;
+    border: 2px dashed light-dark(#bbb, #444); border-radius: 14px;
+    cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  #drop.over { border-color: #2f81f7; background: rgba(47,129,247,.08); }
+  #drop p { margin: 0 0 6px; }
+  #drop .hint { font-size: .85rem; opacity: .6; }
+  #pick { display: none; }
+  button {
+    font: inherit; padding: 8px 22px; border-radius: 8px; border: 1px solid transparent;
+    background: #2f81f7; color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  #list { width: min(560px, 92vw); display: flex; flex-direction: column; gap: 10px; }
+  .item { background: light-dark(#fff, #20242c); border-radius: 10px; padding: 10px 14px; }
+  .item .row { display: flex; justify-content: space-between; gap: 12px; font-size: .9rem; }
+  .item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .pct { font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: rgba(128,128,128,.25); margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #2f81f7; transition: width .15s; }
+  .ok .bar i { background: #2da44e; }
+  .err .bar i { background: #cf222e; }
+  .item .msg { font-size: .8rem; opacity: .75; margin-top: 6px; word-break: break-all; }
+  .err .msg { color: light-dark(#cf222e, #ff7b72); }
+</style>
+</head>
+<body>
+<h1>Upload to quickserve</h1>
+<div id="drop">
+  <p>Drop files here, or click to choose</p>
+  <p class="hint">Any file type &middot; multiple files supported</p>
+</div>
+<input id="pick" type="file" multiple>
+<button id="go" disabled>Upload</button>
+<div id="list"></div>
+
+<script>
+(function () {
+  "use strict";
+  var drop = document.getElementById("drop");
+  var pick = document.getElementById("pick");
+  var go = document.getElementById("go");
+  var list = document.getElementById("list");
+  var files = [];
+  // 上传目标：根路径的 multipart 接口（文件名由每个文件自带）；
+  // token 通过页面 URL 注入一次并透传。
+  var uploadURL = "/" + (location.search || "");
+
+  drop.addEventListener("click", function () { pick.click(); });
+  pick.addEventListener("change", function () { add(pick.files); pick.value = ""; });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("over"); });
+  });
+  drop.addEventListener("drop", function (e) { add(e.dataTransfer.files); });
+
+  function add(fl) {
+    for (var i = 0; i < fl.length; i++) {
+      if (fl[i].size > 0) files.push(fl[i]);
+    }
+    render();
+  }
+
+  function render() {
+    go.disabled = files.length === 0;
+    list.textContent = "";
+    files.forEach(function (f, i) {
+      var item = document.createElement("div");
+      item.className = "item";
+      item.innerHTML =
+        '<div class="row"><span class="name"></span><span class="pct"></span></div>' +
+        '<div class="bar"><i></i></div><div class="msg"></div>';
+      item.querySelector(".name").textContent = f.name;
+      item.querySelector(".pct").textContent = fmt(f.size);
+      list.appendChild(item);
+    });
+  }
+
+  go.addEventListener("click", function () {
+    if (!files.length) return;
+    go.disabled = true;
+    drop.style.display = "none";
+    var items = list.querySelectorAll(".item");
+    var done = 0, failed = 0;
+
+    files.forEach(function (f, i) {
+      var fd = new FormData();
+      fd.append("file", f, f.name);
+      var xhr = new XMLHttpRequest();
+      var item = items[i];
+      var bar = item.querySelector(".bar i");
+      var pct = item.querySelector(".pct");
+      var msg = item.querySelector(".msg");
+
+      xhr.open("POST", uploadURL);
+      xhr.upload.addEventListener("progress", function (e) {
+        if (e.lengthComputable) {
+          var p = Math.round(e.loaded / e.total * 100);
+          bar.style.width = p + "%";
+          pct.textContent = p + "%";
+        }
+      });
+      xhr.addEventListener("load", function () {
+        if (xhr.status === 201 || xhr.status === 200) {
+          item.classList.add("ok");
+          bar.style.width = "100%";
+          pct.textContent = "done";
+          msg.textContent = (xhr.responseText || "").trim();
+        } else {
+          item.classList.add("err");
+          pct.textContent = "failed";
+          msg.textContent = "HTTP " + xhr.status + " " + (xhr.responseText || "").trim();
+          failed++;
+        }
+        finish();
+      });
+      xhr.addEventListener("error", function () {
+        item.classList.add("err");
+        pct.textContent = "failed";
+        msg.textContent = "network error";
+        failed++;
+        finish();
+      });
+      xhr.send(fd);
+    });
+
+    function finish() {
+      if (++done === files.length) {
+        files = [];
+        go.disabled = true;
+        go.textContent = failed ? failed + " failed — pick again" : "All done — pick again";
+        go.disabled = false;
+        drop.style.display = "";
+      }
+    }
+  });
+
+  function fmt(n) {
+    if (n >= 1 << 30) return (n / (1 << 30)).toFixed(1) + " GiB";
+    if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MiB";
+    if (n >= 1 << 10) return (n / (1 << 10)).toFixed(1) + " KiB";
+    return n + " B";
+  }
+})();
+</script>
+</body>
+</html>
