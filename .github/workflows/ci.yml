@@ -59,15 +59,29 @@ jobs:
 
       - name: Smoke test container
         run: |
-          # 预创建挂载目录并授予容器内 UID 65532 写权限（非 root 运行）
+          set -e
+          # 预创建挂载目录并授予容器内 UID 65532 写权限（Linux 上 bind mount
+          # 保留宿主属主，Docker Desktop 会自动处理但 CI runner 不会）
           mkdir -p smoke-data
           sudo chown 65532:65532 smoke-data
-          docker run -d --rm --name qs -p 8000:8000 \
+          docker run -d --name qs -p 8000:8000 \
             --read-only --cap-drop ALL \
             -v "$PWD/smoke-data:/data" quickserve:ci
-          sleep 2
-          curl -fsS http://localhost:8000/health
+
+          # 任何一步失败都先倾倒容器日志再退出，便于定位
+          trap 'echo "=== container logs ==="; docker logs qs; docker rm -f qs || true' EXIT
+
+          # 轮询等待就绪，替代固定 sleep
+          for i in $(seq 1 20); do
+            curl -fsS http://localhost:8000/health && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8000/health | grep -q ok
+
           echo "test" > /tmp/f.txt
           curl -fsS -T /tmp/f.txt http://localhost:8000/f.txt
           curl -fsS http://localhost:8000/f.txt | grep -q test
-          docker stop qs
+          grep -q test smoke-data/f.txt
+
+          docker rm -f qs
+          trap - EXIT
