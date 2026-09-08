@@ -47,7 +47,7 @@ jobs:
             CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
               go build -trimpath \
               -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "build/$BIN" .
+              -o "build/$BIN" ./cmd/quickserve
 
             mkdir -p "build/pkg"
             mv "build/$BIN" "build/pkg/$BIN"

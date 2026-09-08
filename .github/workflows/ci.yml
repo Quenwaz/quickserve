@@ -59,6 +59,9 @@ jobs:
 
       - name: Smoke test container
         run: |
+          # 预创建挂载目录并授予容器内 UID 65532 写权限（非 root 运行）
+          mkdir -p smoke-data
+          sudo chown 65532:65532 smoke-data
           docker run -d --rm --name qs -p 8000:8000 \
             --read-only --cap-drop ALL \
             -v "$PWD/smoke-data:/data" quickserve:ci
