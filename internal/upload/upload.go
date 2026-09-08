@@ -310,6 +310,11 @@ func (h *handler) writeAtomic(full string, r io.Reader) (int64, error) {
 		copyErr = errTooLarge
 	}
 	if copyErr == nil {
+		// os.CreateTemp 默认 0600（仅属主可读）。文件服务器产出的文件
+		// 应与普通上传文件一致（0644），否则挂载卷的宿主侧无法读取。
+		copyErr = tmp.Chmod(0o644)
+	}
+	if copyErr == nil {
 		copyErr = tmp.Sync()
 	}
 	if copyErr == nil {

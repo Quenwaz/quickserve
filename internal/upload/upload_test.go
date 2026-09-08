@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -346,6 +347,25 @@ func TestOverwriteProtectionIntegration(t *testing.T) {
 	}
 	if out := upload(); !strings.Contains(out, "already exists") {
 		t.Errorf("second upload should be skipped with conflict note:\n%s", out)
+	}
+}
+
+func TestUploadedFilePermissions(t *testing.T) {
+	// 上传产物应为 0644：挂载卷场景下宿主侧非属主用户也要能读取。
+	// （Windows 不实现 POSIX 权限位，仅在 Linux/macOS 上断言。）
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits not applicable on windows")
+	}
+	h := newTestHandler(t, nil)
+	if w := post(h, "/perm.txt", strings.NewReader("x")); w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	info, err := os.Stat(filepath.Join(h.root, "perm.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("uploaded file mode = %o, want 644", got)
 	}
 }
 
