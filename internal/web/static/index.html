@@ -75,8 +75,10 @@
   drop.addEventListener("drop", function (e) { add(e.dataTransfer.files); });
 
   function add(fl) {
+    // 0 字节文件同样入列上传（服务端允许，覆盖保护对空文件放行）；
+    // 之前静默过滤导致选择空文件时页面毫无反馈。
     for (var i = 0; i < fl.length; i++) {
-      if (fl[i].size > 0) files.push(fl[i]);
+      files.push(fl[i]);
     }
     render();
   }
