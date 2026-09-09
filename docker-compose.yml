@@ -8,6 +8,11 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
+    environment:
+      # 所有选项均可用 QUICKSERVE_* 环境变量配置（命令行 command 优先）。
+      # 例如挂在反向代理的 /apps 子路径下：
+      QUICKSERVE_BASE_PATH: /apps
+      QUICKSERVE_UPLOAD: "1"
     # ---- 安全加固 ----
     read_only: true            # 根文件系统只读，写入只进 /data
     tmpfs:

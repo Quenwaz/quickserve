@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,10 +27,11 @@ import (
 
 // New 构造完整 HTTP handler。
 func New(opts *config.Options, fs http.Handler, up http.Handler) http.Handler {
-	page := web.UploadPageHandler()
+	page := web.UploadPage(opts.BasePath())
 
 	mux := http.NewServeMux()
-	// /health 供容器 HEALTHCHECK 与负载均衡探活，始终可用。
+	// /health 供容器 HEALTHCHECK 与负载均衡探活，始终可用，
+	// 且不随 base-path 前缀变化（探活直连容器端口）。
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")
@@ -38,10 +40,37 @@ func New(opts *config.Options, fs http.Handler, up http.Handler) http.Handler {
 	mux.Handle("/", rootHandler(opts, fs, up))
 
 	h := http.Handler(mux)
+	if bp := opts.BasePath(); bp != "" {
+		h = stripPrefix(h, bp)
+	}
 	if opts.CORS() {
 		h = corsMiddleware(h)
 	}
 	return logMiddleware(h)
+}
+
+// stripPrefix 剥离请求路径中的 base 前缀；未携带前缀的请求按根路径语义
+// 处理（重定向到带前缀的根，便于直接访问域名时落到正确位置）。
+func stripPrefix(next http.Handler, base string) http.Handler {
+	trimmed := strings.TrimSuffix(base, "/")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p == trimmed || p == trimmed+"/" {
+			// 根路径本身：改为 "/" 交给 mux（列出文件、上传页面入口）。
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			next.ServeHTTP(w, r2)
+			return
+		}
+		if !strings.HasPrefix(p, trimmed+"/") {
+			// 前缀不匹配：反向代理配置不一致或直接访问，给出明确指引。
+			http.Redirect(w, r, trimmed+r.URL.Path, http.StatusFound)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = strings.TrimPrefix(p, trimmed)
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // rootHandler 处理根路由：GET/HEAD 静态文件，POST/PUT 上传（可选），其余 405。
@@ -77,11 +106,16 @@ func setCORS(w http.ResponseWriter) {
 
 // printBanner 输出启动信息，包括局域网地址，方便手机等设备直接访问。
 func printBanner(w io.Writer, opts *config.Options, absDir string) {
+	base := opts.BasePath()
+	rootURL := "http://localhost:" + strconv.Itoa(opts.Port()) + base + "/"
 	fmt.Fprintf(w, "quickserve %s\n", version)
-	fmt.Fprintf(w, "Serving HTTP on port %d (http://localhost:%d/)\n", opts.Port(), opts.Port())
+	fmt.Fprintf(w, "Serving HTTP on port %d (%s)\n", opts.Port(), rootURL)
+	if base != "" {
+		fmt.Fprintf(w, "Base path: %s\n", base)
+	}
 	fmt.Fprintf(w, "Directory: %s\n", absDir)
 	for _, ip := range localIPs() {
-		fmt.Fprintf(w, "LAN:       http://%s:%d/\n", ip, opts.Port())
+		fmt.Fprintf(w, "LAN:       http://%s:%d%s/\n", ip, opts.Port(), base)
 	}
 	fmt.Fprintf(w, "Upload:    %s\n", enabledDisabled(opts.Upload()))
 	fmt.Fprintf(w, "CORS:      %s\n", enabledDisabled(opts.CORS()))
@@ -89,7 +123,7 @@ func printBanner(w io.Writer, opts *config.Options, absDir string) {
 		fmt.Fprintf(w, "Max size:  %s\n", maxUploadDesc(opts.MaxUploadBytes()))
 		fmt.Fprintf(w, "Rate:      %s/minute/IP\n", rateDesc(opts.RatePerMinute()))
 		fmt.Fprintf(w, "Auth:      %s\n", authDesc(opts.Token()))
-		fmt.Fprintf(w, "Web page:  /_upload\n")
+		fmt.Fprintf(w, "Web page:  %s/_upload\n", base)
 	}
 	fmt.Fprintln(w, "Press Ctrl+C to stop.")
 }

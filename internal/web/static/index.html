@@ -60,9 +60,9 @@
   var go = document.getElementById("go");
   var list = document.getElementById("list");
   var files = [];
-  // 上传目标：根路径的 multipart 接口（文件名由每个文件自带）；
-  // token 通过页面 URL 注入一次并透传。
-  var uploadURL = "/" + (location.search || "");
+  // 上传目标：BASE_PATH 由服务端注入（反代子路径部署时非空）；
+  // multipart 接口在根路径，文件名由每个文件自带；token 透传。
+  var uploadURL = "__QS_BASE_PATH__/" + (location.search || "");
 
   drop.addEventListener("click", function () { pick.click(); });
   pick.addEventListener("change", function () { add(pick.files); pick.value = ""; });

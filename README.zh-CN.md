@@ -92,9 +92,16 @@ quickserve [选项]
   -t, -token <密钥>      上传需要令牌（Authorization: Bearer / X-Auth-Token / ?token=）
   -m, -max-upload <大小> 单文件体积上限（默认 1GiB；0 不限；如 100MB）
   -r, -rate-limit <N>    单 IP 每分钟上传请求数上限（默认 60；0 不限）
+  -b, -base-path <路径>  反向代理子路径部署时的 URL 基础路径（如 /apps）
   -ro, -read-only        连下载也关闭，仅保留 /health 探活
   -v, -version           打印版本号
   -h, -help              显示帮助
+
+每个选项都有对应的 `QUICKSERVE_*` 环境变量（`QUICKSERVE_PORT`、
+`QUICKSERVE_DIR`、`QUICKSERVE_UPLOAD`、`QUICKSERVE_CORS`、`QUICKSERVE_TOKEN`、
+`QUICKSERVE_MAX_UPLOAD`、`QUICKSERVE_RATE_LIMIT`、`QUICKSERVE_BASE_PATH`、
+`QUICKSERVE_READ_ONLY`）；命令行参数优先于环境变量。布尔值接受
+`1/true/yes/on` 与 `0/false/no/off`。
 ```
 
 端口支持位置参数写法，和 `python -m http.server 9999` 习惯一致：`quickserve 9999`、`quickserve 9999 d:\share`。
@@ -107,7 +114,18 @@ quickserve [选项]
 | `/<路径>` | POST, PUT | 上传到指定路径（需 `-u`） |
 | `/` | POST（multipart） | 浏览器表单上传（需 `-u`） |
 | `/_upload` | GET | 内置上传页面（需 `-u`） |
-| `/health` | GET | 存活探针，始终开启 |
+| `/health` | GET | 存活探针，始终开启，不受 base-path 前缀影响 |
+
+### 反向代理子路径部署
+
+quickserve 被挂在子路径下时（如 nginx `location /apps/ { proxy_pass http://qs:8000; }`），
+用 `-b/--base-path`（或 `QUICKSERVE_BASE_PATH`）声明前缀：
+
+```sh
+quickserve -u -b /apps
+# 此时可从 http://host:8000/apps/ 访问，上传落点相对该前缀；
+# 不带前缀的请求会被重定向到带前缀的地址；/health 保持在根路径
+```
 
 ## 上传保护机制
 

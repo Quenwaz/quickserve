@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -22,7 +23,7 @@ const (
 	DefaultRateLimit = 60
 )
 
-// Options 是从命令行解析出的服务器配置。
+// Options 是从命令行与环境变量解析出的服务器配置。
 type Options struct {
 	port     int
 	dir      string
@@ -32,6 +33,7 @@ type Options struct {
 	maxSize  int64
 	ratePM   int
 	readonly bool
+	basePath string
 }
 
 // NewOptions 返回带默认值的配置，供测试等场景直接构造。
@@ -55,19 +57,35 @@ func (o *Options) MaxUploadBytes() int64 { return o.maxSize }
 func (o *Options) RatePerMinute() int    { return o.ratePM }
 func (o *Options) ReadOnly() bool        { return o.readonly }
 
-// SetUpload / SetCORS / SetReadOnly / SetToken 供测试与嵌入场景编程式构造配置。
-func (o *Options) SetUpload()          { o.upload = true }
-func (o *Options) SetCORS()            { o.cors = true }
-func (o *Options) SetReadOnly()        { o.readonly = true }
-func (o *Options) SetToken(t string)   { o.token = t }
-func (o *Options) SetMaxBytes(n int64) { o.maxSize = n }
-func (o *Options) SetRatePerMin(n int) { o.ratePM = n }
+// BasePath 返回 URL 基础路径（如 "/apps"），空串表示部署在根路径。
+func (o *Options) BasePath() string { return o.basePath }
 
-// ParseArgs 解析命令行参数。兼容 python -m http.server 的位置参数风格：
-// 纯数字位置参数作为端口，其余位置参数作为目录。也支持 -port/-dir 等长选项。
+// SetUpload / SetCORS / SetReadOnly / SetToken / SetBasePath
+// 供测试与嵌入场景编程式构造配置。SetBasePath 忽略规范化错误（非法值存原样），
+// 校验语义以 ParseArgs 为准。
+func (o *Options) SetUpload()           { o.upload = true }
+func (o *Options) SetCORS()             { o.cors = true }
+func (o *Options) SetReadOnly()         { o.readonly = true }
+func (o *Options) SetToken(t string)    { o.token = t }
+func (o *Options) SetMaxBytes(n int64)  { o.maxSize = n }
+func (o *Options) SetRatePerMin(n int)  { o.ratePM = n }
+func (o *Options) SetBasePath(p string) { o.basePath, _ = NormalizeBasePath(p) }
+
+// ParseArgs 解析命令行参数与环境变量。兼容 python -m http.server 的位置参数
+// 风格：纯数字位置参数作为端口，其余位置参数作为目录。也支持 -port/-dir 等长选项。
+// 每个选项都有对应的 QUICKSERVE_<NAME> 环境变量；命令行优先于环境变量。
 func ParseArgs(args []string) (Options, error) {
-	opts := NewOptions()
-	var wantPort, wantDir, wantToken, wantMax, wantRate bool
+	opts, err := parseEnv()
+	if err != nil {
+		return opts, err
+	}
+	return parseFlags(opts, args)
+}
+
+// parseFlags 在 env 基础上解析命令行参数。
+func parseFlags(env Options, args []string) (Options, error) {
+	opts := env
+	var wantPort, wantDir, wantToken, wantMax, wantRate, wantBase bool
 	var positional []string
 
 	for _, a := range args {
@@ -99,6 +117,13 @@ func ParseArgs(args []string) (Options, error) {
 			}
 			opts.ratePM = n
 			wantRate = false
+		case wantBase:
+			bp, err := NormalizeBasePath(a)
+			if err != nil {
+				return opts, fmt.Errorf("invalid base-path %q: %v", a, err)
+			}
+			opts.basePath = bp
+			wantBase = false
 		case a == "-p" || a == "-port" || a == "--port":
 			wantPort = true
 		case strings.HasPrefix(a, "-p=") || strings.HasPrefix(a, "-port=") || strings.HasPrefix(a, "--port="):
@@ -137,6 +162,14 @@ func ParseArgs(args []string) (Options, error) {
 				return opts, fmt.Errorf("invalid rate-limit %q", cutValue(a))
 			}
 			opts.ratePM = n
+		case a == "-b" || a == "-base-path" || a == "--base-path":
+			wantBase = true
+		case strings.HasPrefix(a, "-b=") || strings.HasPrefix(a, "-base-path=") || strings.HasPrefix(a, "--base-path="):
+			bp, err := NormalizeBasePath(cutValue(a))
+			if err != nil {
+				return opts, fmt.Errorf("invalid base-path %q: %v", cutValue(a), err)
+			}
+			opts.basePath = bp
 		case a == "-v" || a == "-version" || a == "--version":
 			return opts, ErrVersion
 		case a == "-h" || a == "-help" || a == "--help":
@@ -162,6 +195,9 @@ func ParseArgs(args []string) (Options, error) {
 	if wantRate {
 		return opts, errors.New("missing value for rate-limit option")
 	}
+	if wantBase {
+		return opts, errors.New("missing value for base-path option")
+	}
 	for _, p := range positional {
 		if n, err := strconv.Atoi(p); err == nil {
 			opts.port = n
@@ -170,6 +206,107 @@ func ParseArgs(args []string) (Options, error) {
 		}
 	}
 	return opts, nil
+}
+
+// parseEnv 读取 QUICKSERVE_* 环境变量作为默认配置。
+// 仅显式设置的非空变量生效；布尔值接受 1/true/yes/on（不区分大小写）。
+func parseEnv() (Options, error) {
+	opts := NewOptions()
+	if v := os.Getenv("QUICKSERVE_PORT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 65535 {
+			return opts, fmt.Errorf("invalid QUICKSERVE_PORT %q", v)
+		}
+		opts.port = n
+	}
+	if v := os.Getenv("QUICKSERVE_DIR"); v != "" {
+		opts.dir = v
+	}
+	if v := os.Getenv("QUICKSERVE_UPLOAD"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid QUICKSERVE_UPLOAD %q", v)
+		}
+		opts.upload = b
+	}
+	if v := os.Getenv("QUICKSERVE_CORS"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid QUICKSERVE_CORS %q", v)
+		}
+		opts.cors = b
+	}
+	if v := os.Getenv("QUICKSERVE_TOKEN"); v != "" {
+		opts.token = v
+	}
+	if v := os.Getenv("QUICKSERVE_MAX_UPLOAD"); v != "" {
+		n, err := ParseSize(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid QUICKSERVE_MAX_UPLOAD %q", v)
+		}
+		opts.maxSize = n
+	}
+	if v := os.Getenv("QUICKSERVE_RATE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return opts, fmt.Errorf("invalid QUICKSERVE_RATE_LIMIT %q", v)
+		}
+		opts.ratePM = n
+	}
+	if v := os.Getenv("QUICKSERVE_READ_ONLY"); v != "" {
+		b, err := parseBool(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid QUICKSERVE_READ_ONLY %q", v)
+		}
+		opts.readonly = b
+	}
+	if v := os.Getenv("QUICKSERVE_BASE_PATH"); v != "" {
+		bp, err := NormalizeBasePath(v)
+		if err != nil {
+			return opts, fmt.Errorf("invalid QUICKSERVE_BASE_PATH %q: %v", v, err)
+		}
+		opts.basePath = bp
+	}
+	return opts, nil
+}
+
+// parseBool 解析宽松的布尔环境变量值。
+func parseBool(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on", "y":
+		return true, nil
+	case "0", "false", "no", "off", "n":
+		return false, nil
+	}
+	return false, fmt.Errorf("not a boolean: %q", v)
+}
+
+// NormalizeBasePath 规范化 URL 基础路径：确保以 "/" 开头、不以 "/" 结尾，
+// 折叠空段；空串/"/" 均视为根路径（返回空串）。拒绝 "."/".." 段与空白
+// 字符，防前缀歧义。
+func NormalizeBasePath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" || p == "/" {
+		return "", nil
+	}
+	if strings.ContainsAny(p, " \t\r\n") {
+		return "", errors.New("whitespace is not allowed")
+	}
+	var parts []string
+	for _, seg := range strings.Split(p, "/") {
+		switch seg {
+		case "", "/":
+			continue // 折叠空段与前导斜杠
+		case ".", "..":
+			return "", fmt.Errorf("segment %q is not allowed", seg)
+		default:
+			parts = append(parts, seg)
+		}
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "/" + strings.Join(parts, "/"), nil
 }
 
 // ParseSize 解析人类可读的体积字符串，如 "100MB"、"512K"、"1G"，纯数字按字节。
@@ -229,9 +366,15 @@ Options:
   -t, -token <secret>    require token for upload (Authorization: Bearer <secret> or ?token=<secret>)
   -m, -max-upload <size> max upload size per request (default 1GiB; 0 = unlimited; e.g. 100MB)
   -r, -rate-limit <N>    per-IP uploads per minute (default 60; 0 = unlimited)
+  -b, -base-path <path>  URL base path when behind a reverse proxy sub-path (e.g. /apps)
   -ro, -read-only        disable listing/downloads too; only health endpoint stays up
   -v, -version           print version and exit
   -h, -help              show this help
+
+Environment variables (command-line flags take precedence):
+  QUICKSERVE_PORT, QUICKSERVE_DIR, QUICKSERVE_UPLOAD, QUICKSERVE_CORS,
+  QUICKSERVE_TOKEN, QUICKSERVE_MAX_UPLOAD, QUICKSERVE_RATE_LIMIT,
+  QUICKSERVE_BASE_PATH, QUICKSERVE_READ_ONLY
 
 Examples:
   quickserve                      serve current dir on :8000
@@ -239,6 +382,7 @@ Examples:
   quickserve 9999 ./public        serve ./public on :9999
   quickserve -u -p 9000           serve with upload enabled on :9000
   quickserve -u -t s3cr3t -m 500MB  upload with token auth and 500MB cap
+  quickserve -u -b /apps          serve under http://host:8000/apps/ (reverse proxy)
   curl -T big.zip localhost:9000/big.zip    upload a file
 `)
 }

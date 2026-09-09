@@ -302,6 +302,98 @@ func TestBannerShowsUploadConfig(t *testing.T) {
 	}
 }
 
+func TestBasePathEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "f.txt"), []byte("base"), 0o644)
+	o := testOpts(func(op *config.Options) {
+		op.SetUpload()
+		op.SetBasePath("/apps")
+	})
+	ts := newTestServer(t, dir, o)
+
+	// 带前缀访问：静态文件、上传页面、health 均可达
+	resp, err := http.Get(ts.URL + "/apps/f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "base" {
+		t.Errorf("GET /apps/f.txt = %d %q, want 200 %q", resp.StatusCode, body, "base")
+	}
+
+	resp2, err := http.Get(ts.URL + "/apps/_upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("GET /apps/_upload = %d, want 200", resp2.StatusCode)
+	}
+	if !strings.Contains(string(page), `uploadURL = "/apps/"`) {
+		t.Error("upload page missing injected base path")
+	}
+
+	resp3, err := http.Get(ts.URL + "/apps/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("GET /apps/health = %d, want 200", resp3.StatusCode)
+	}
+
+	// 不带前缀的 multipart 上传走 /apps/（页面注入的 URL）
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "bp.txt")
+	fw.Write([]byte("basepath-upload"))
+	mw.Close()
+	resp4, err := http.Post(ts.URL+"/apps/", mw.FormDataContentType(), &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp4.Body.Close()
+	if resp4.StatusCode != http.StatusCreated {
+		t.Errorf("POST /apps/ = %d, want 201; body=%s", resp4.StatusCode, mustRead(resp4))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bp.txt")); err != nil {
+		t.Errorf("upload under base path not saved: %v", err)
+	}
+
+	// 根路径重定向到带前缀的根（反向代理不一致时的指引）
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp5, err := client.Get(ts.URL + "/f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp5.Body.Close()
+	if resp5.StatusCode != http.StatusFound {
+		t.Errorf("GET /f.txt without prefix = %d, want 302", resp5.StatusCode)
+	}
+	if loc := resp5.Header.Get("Location"); loc != "/apps/f.txt" {
+		t.Errorf("Location = %q, want /apps/f.txt", loc)
+	}
+}
+
+func TestHealthAlwaysOnRoot(t *testing.T) {
+	// /health 不随 base-path 变化：容器探活直连端口，必须在根路径可用。
+	dir := t.TempDir()
+	o := testOpts(func(op *config.Options) { op.SetBasePath("/apps") })
+	ts := newTestServer(t, dir, o)
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /health with base-path set = %d, want 200", resp.StatusCode)
+	}
+}
+
 func mustRead(resp *http.Response) string {
 	b, _ := io.ReadAll(resp.Body)
 	return string(b)

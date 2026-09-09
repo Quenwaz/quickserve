@@ -72,9 +72,16 @@ quickserve [options]
                          (Authorization: Bearer <secret> / X-Auth-Token / ?token=)
   -m, -max-upload <size> per-file size cap (default 1GiB; 0 = unlimited; e.g. 100MB)
   -r, -rate-limit <N>    per-IP uploads per minute (default 60; 0 = unlimited)
+  -b, -base-path <path>  URL base path behind a reverse proxy (e.g. /apps)
   -ro, -read-only        block downloads too; only /health responds
   -v, -version           print version and exit
   -h, -help              show this help
+
+Every option also has a `QUICKSERVE_*` environment variable
+(`QUICKSERVE_PORT`, `QUICKSERVE_DIR`, `QUICKSERVE_UPLOAD`, `QUICKSERVE_CORS`,
+`QUICKSERVE_TOKEN`, `QUICKSERVE_MAX_UPLOAD`, `QUICKSERVE_RATE_LIMIT`,
+`QUICKSERVE_BASE_PATH`, `QUICKSERVE_READ_ONLY`); command-line flags take
+precedence. Booleans accept `1/true/yes/on` and `0/false/no/off`.
 ```
 
 ### Endpoints
@@ -85,7 +92,18 @@ quickserve [options]
 | `/<path>` | POST, PUT | upload to that path (`-u`) |
 | `/` | POST (multipart) | browser/form upload (`-u`) |
 | `/_upload` | GET | built-in upload page (`-u`) |
-| `/health` | GET | liveness probe, always on |
+| `/health` | GET | liveness probe, always on, never prefixed by base path |
+
+### Behind a reverse proxy sub-path
+
+Use `-b/--base-path` (or `QUICKSERVE_BASE_PATH`) when quickserve is mounted
+under a sub-path, e.g. nginx `location /apps/ { proxy_pass http://qs:8000; }`:
+
+```sh
+quickserve -u -b /apps
+# now reachable at http://host:8000/apps/, uploads land relative to that prefix;
+# requests without the prefix are redirected to it; /health stays at the root
+```
 
 ## Protections
 
