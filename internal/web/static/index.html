@@ -64,8 +64,14 @@
   // multipart 接口在根路径，文件名由每个文件自带；token 透传。
   var uploadURL = "__QS_BASE_PATH__/" + (location.search || "");
 
+  var DEFAULT_LABEL = "Upload";
+
   drop.addEventListener("click", function () { pick.click(); });
-  pick.addEventListener("change", function () { add(pick.files); pick.value = ""; });
+  pick.addEventListener("change", function () {
+    add(pick.files);
+    // 立即清空 value：同一批文件可以重复选择（否则浏览器因值未变而不触发 change）。
+    pick.value = "";
+  });
   ["dragenter", "dragover"].forEach(function (ev) {
     drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("over"); });
   });
@@ -85,6 +91,7 @@
 
   function render() {
     go.disabled = files.length === 0;
+    go.textContent = DEFAULT_LABEL; // 重新选择文件后恢复按钮初始文案
     list.textContent = "";
     files.forEach(function (f, i) {
       var item = document.createElement("div");
@@ -149,7 +156,8 @@
     function finish() {
       if (++done === files.length) {
         files = [];
-        go.disabled = true;
+        // 结果摘要显示在按钮上；保持可点，作为"再来一轮"的入口。
+        // 重新选文件时由 render() 恢复为默认文案。
         go.textContent = failed ? failed + " failed — pick again" : "All done — pick again";
         go.disabled = false;
         drop.style.display = "";
