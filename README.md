@@ -97,7 +97,7 @@ precedence. Booleans accept `1/true/yes/on` and `0/false/no/off`.
 ### Behind a reverse proxy sub-path
 
 Use `-b/--base-path` (or `QUICKSERVE_BASE_PATH`) when quickserve is mounted
-under a sub-path, e.g. nginx `location /apps/ { proxy_pass http://qs:8000; }`:
+under a sub-path of your reverse proxy:
 
 ```sh
 quickserve -u -b /apps

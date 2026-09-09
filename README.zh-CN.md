@@ -118,7 +118,7 @@ quickserve [选项]
 
 ### 反向代理子路径部署
 
-quickserve 被挂在子路径下时（如 nginx `location /apps/ { proxy_pass http://qs:8000; }`），
+quickserve 被挂在反向代理的子路径下时，
 用 `-b/--base-path`（或 `QUICKSERVE_BASE_PATH`）声明前缀：
 
 ```sh
