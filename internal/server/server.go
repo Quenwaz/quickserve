@@ -51,20 +51,38 @@ func New(opts *config.Options, fs http.Handler, up http.Handler) http.Handler {
 
 // stripPrefix 剥离请求路径中的 base 前缀；未携带前缀的请求按根路径语义
 // 处理（重定向到带前缀的根，便于直接访问域名时落到正确位置）。
+//
+// 语义要点：
+//   - /health 与其前缀变体 <base>/health 都直接服务（探活不应依赖重定向）；
+//   - 重定向使用 308（Permanent Redirect）：浏览器/curl 跟随 308 时保留
+//     原方法与请求体，POST/PUT 上传不会退化为 GET（302/303 会丢方法）；
+//   - 重定向保留完整查询串（如 ?token=...），避免上传 401。
 func stripPrefix(next http.Handler, base string) http.Handler {
 	trimmed := strings.TrimSuffix(base, "/")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if p == trimmed || p == trimmed+"/" {
-			// 根路径本身：改为 "/" 交给 mux（列出文件、上传页面入口）。
+		// 探活端点：无论带不带前缀都直接应答，绝不重定向。
+		if p == "/health" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			fmt.Fprintln(w, "ok")
+			return
+		}
+		if p == trimmed || p == trimmed+"/" || p == trimmed+"/health" {
+			// 前缀内的根（或 <base>/health）：改为对应内部路径交给 mux。
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
+			if p == trimmed+"/health" {
+				r2.URL.Path = "/health"
+			}
 			next.ServeHTTP(w, r2)
 			return
 		}
 		if !strings.HasPrefix(p, trimmed+"/") {
 			// 前缀不匹配：反向代理配置不一致或直接访问，给出明确指引。
-			http.Redirect(w, r, trimmed+r.URL.Path, http.StatusFound)
+			// 308 保留方法与请求体；RawQuery 原样透传。
+			target := *r.URL
+			target.Path = trimmed + p
+			http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
 			return
 		}
 		r2 := r.Clone(r.Context())

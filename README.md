@@ -102,7 +102,9 @@ under a sub-path, e.g. nginx `location /apps/ { proxy_pass http://qs:8000; }`:
 ```sh
 quickserve -u -b /apps
 # now reachable at http://host:8000/apps/, uploads land relative to that prefix;
-# requests without the prefix are redirected to it; /health stays at the root
+# requests without the prefix are redirected to it with 308 (method,
+# body and query preserved, so uploads still land); /health answers
+# directly at the root and under the prefix
 ```
 
 ## Protections

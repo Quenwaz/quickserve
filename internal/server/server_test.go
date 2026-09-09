@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -362,7 +363,7 @@ func TestBasePathEndToEnd(t *testing.T) {
 		t.Errorf("upload under base path not saved: %v", err)
 	}
 
-	// 根路径重定向到带前缀的根（反向代理不一致时的指引）
+	// 根路径重定向到带前缀的根（308，保留方法与查询串）
 	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
@@ -371,8 +372,8 @@ func TestBasePathEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp5.Body.Close()
-	if resp5.StatusCode != http.StatusFound {
-		t.Errorf("GET /f.txt without prefix = %d, want 302", resp5.StatusCode)
+	if resp5.StatusCode != http.StatusPermanentRedirect {
+		t.Errorf("GET /f.txt without prefix = %d, want 308", resp5.StatusCode)
 	}
 	if loc := resp5.Header.Get("Location"); loc != "/apps/f.txt" {
 		t.Errorf("Location = %q, want /apps/f.txt", loc)
@@ -380,17 +381,84 @@ func TestBasePathEndToEnd(t *testing.T) {
 }
 
 func TestHealthAlwaysOnRoot(t *testing.T) {
-	// /health 不随 base-path 变化：容器探活直连端口，必须在根路径可用。
+	// /health 不随 base-path 变化：容器探活直连端口，必须在根路径可用
+	// 且直接返回 200（探针不应依赖重定向跟随）。
 	dir := t.TempDir()
 	o := testOpts(func(op *config.Options) { op.SetBasePath("/apps") })
 	ts := newTestServer(t, dir, o)
-	resp, err := http.Get(ts.URL + "/health")
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	for _, path := range []string{"/health", "/apps/health"} {
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "ok" {
+			t.Errorf("GET %s = %d %q, want 200 ok", path, resp.StatusCode, body)
+		}
+	}
+}
+
+func TestBasePathRedirectPreservesMethodAndQuery(t *testing.T) {
+	// 未带前缀的 POST 上传：308 重定向必须保留方法、请求体与查询串。
+	dir := t.TempDir()
+	o := testOpts(func(op *config.Options) {
+		op.SetUpload()
+		op.SetBasePath("/apps")
+		op.SetToken("s3cr3t")
+	})
+	ts := newTestServer(t, dir, o)
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	// 1) 重定向本身：308 且 Location 带前缀和查询串
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/up.txt?token=s3cr3t", strings.NewReader("data"))
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("GET /health with base-path set = %d, want 200", resp.StatusCode)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPermanentRedirect {
+		t.Fatalf("unprefixed PUT status = %d, want 308", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/apps/up.txt?token=s3cr3t" {
+		t.Errorf("Location = %q, want /apps/up.txt?token=s3cr3t", loc)
+	}
+
+	// 2) 跟随重定向：方法与请求体保留，上传成功（方法不被降级为 GET）
+	req2, _ := http.NewRequest(http.MethodPut, ts.URL+"/up2.txt?token=s3cr3t", strings.NewReader("data2"))
+	client2 := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) > 3 {
+			return errors.New("too many redirects")
+		}
+		return nil
+	}}
+	resp2, err := client2.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusCreated {
+		t.Errorf("followed PUT status = %d, want 201; body=%s", resp2.StatusCode, mustRead(resp2))
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "up2.txt"))
+	if err != nil || string(got) != "data2" {
+		t.Errorf("uploaded after redirect = %q (err %v), want data2", got, err)
+	}
+
+	// 3) 查询串中的 token 在重定向后仍生效（不被丢弃导致 401）
+	req3, _ := http.NewRequest(http.MethodPost, ts.URL+"/up3.txt?token=s3cr3t", strings.NewReader("data3"))
+	resp3, err := client2.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusCreated {
+		t.Errorf("POST with query token after redirect = %d, want 201; body=%s", resp3.StatusCode, mustRead(resp3))
 	}
 }
 

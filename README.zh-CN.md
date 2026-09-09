@@ -124,7 +124,8 @@ quickserve 被挂在子路径下时（如 nginx `location /apps/ { proxy_pass ht
 ```sh
 quickserve -u -b /apps
 # 此时可从 http://host:8000/apps/ 访问，上传落点相对该前缀；
-# 不带前缀的请求会被重定向到带前缀的地址；/health 保持在根路径
+# 不带前缀的请求以 308 重定向到带前缀的地址（保留方法、请求体与查询串，
+# 上传不会因此失败）；/health 在根路径与前缀下都直接应答
 ```
 
 ## 上传保护机制
